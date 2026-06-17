@@ -174,14 +174,14 @@
       ctx.closePath();
     }
 
-    function drawTile(centerX, centerY, rotation) {
+    function drawTile(centerX, centerY, rotation, seed) {
       const size = tileSize * 1.006;
 
       ctx.save();
       warpedHexPath(centerX, centerY, rotation, size);
       ctx.clip();
 
-      drawRibbonPattern(centerX, centerY, rotation, size);
+      drawRibbonPattern(centerX, centerY, rotation, size, seed);
 
       ctx.restore();
     }
@@ -209,7 +209,7 @@
       ctx.closePath();
     }
 
-    function drawRibbonPattern(centerX, centerY, rotation, size) {
+    function drawRibbonPattern(centerX, centerY, rotation, size, seed) {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
@@ -228,14 +228,18 @@
         y: -sqrt3 * size / 2
       };
 
-      drawCircle(centerX, centerY, rotation, upperNeighborCenter.x, upperNeighborCenter.y, largeRadius, colors.ink, 7);
-      drawCircle(centerX, centerY, rotation, upperRightNeighborCenter.x, upperRightNeighborCenter.y, largeRadius, colors.ink, 7);
-      drawCircle(centerX, centerY, rotation, vertex.x, vertex.y, smallRadius, colors.ink, 7);
+      [
+        { x: upperNeighborCenter.x, y: upperNeighborCenter.y, radius: largeRadius, z: randomUnit(seed, 1) },
+        { x: upperRightNeighborCenter.x, y: upperRightNeighborCenter.y, radius: largeRadius, z: randomUnit(seed, 2) },
+        { x: vertex.x, y: vertex.y, radius: smallRadius, z: randomUnit(seed, 3) }
+      ]
+        .sort((a, b) => a.z - b.z)
+        .forEach((circle) => {
+          drawCircle(centerX, centerY, rotation, circle.x, circle.y, circle.radius);
+        });
     }
 
-    function drawCircle(tileX, tileY, rotation, centerX, centerY, radius, color, width) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
+    function drawCircle(tileX, tileY, rotation, centerX, centerY, radius) {
       ctx.beginPath();
 
       for (let step = 0; step <= 128; step += 1) {
@@ -252,6 +256,11 @@
         else ctx.lineTo(point.x, point.y);
       }
 
+      ctx.strokeStyle = colors.ink;
+      ctx.lineWidth = 13;
+      ctx.stroke();
+      ctx.strokeStyle = "#f7f3ee";
+      ctx.lineWidth = 7;
       ctx.stroke();
     }
 
@@ -274,6 +283,12 @@
 
     function lerp(start, end, t) {
       return start + (end - start) * t;
+    }
+
+    function randomUnit(seed, salt) {
+      let n = seed + salt * 374761393;
+      n = (n ^ (n >>> 13)) * 1274126177;
+      return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
     }
 
     function drawBackground() {
@@ -309,8 +324,9 @@
             continue;
           }
 
-          const rotation = (hash(q, r) % 6) * Math.PI / 3;
-          drawTile(pos.x, pos.y, rotation);
+          const seed = hash(q, r);
+          const rotation = (seed % 6) * Math.PI / 3;
+          drawTile(pos.x, pos.y, rotation, seed);
         }
       }
 
