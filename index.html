@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hex Tile Field</title>
+  <title>Knots</title>
   <style>
     :root {
       color-scheme: light;
@@ -73,7 +73,7 @@
   </style>
 </head>
 <body>
-  <canvas id="field" aria-label="Infinite field of rotated hex tiles"></canvas>
+  <canvas id="field" aria-label="Infinite knot pattern"></canvas>
   <div class="toolbar" aria-label="View controls">
     <button id="zoom-out" type="button" aria-label="Zoom out">-</button>
     <button id="reset" type="button" aria-label="Reset view">0</button>
@@ -83,6 +83,8 @@
   <script>
     const canvas = document.getElementById("field");
     const ctx = canvas.getContext("2d");
+    const shadowCanvas = document.createElement("canvas");
+    const shadowCtx = shadowCanvas.getContext("2d");
     const rootStyles = getComputedStyle(document.documentElement);
     const colors = {
       bg: rootStyles.getPropertyValue("--bg").trim(),
@@ -108,6 +110,8 @@
       dpr = Math.max(1, window.devicePixelRatio || 1);
       canvas.width = Math.round(window.innerWidth * dpr);
       canvas.height = Math.round(window.innerHeight * dpr);
+      shadowCanvas.width = canvas.width;
+      shadowCanvas.height = canvas.height;
       canvas.style.width = `${window.innerWidth}px`;
       canvas.style.height = `${window.innerHeight}px`;
       queueDraw();
@@ -174,20 +178,20 @@
       ctx.closePath();
     }
 
-    function drawTile(centerX, centerY, rotation, seed) {
+    function drawTile(renderCtx, centerX, centerY, rotation, seed, mode) {
       const size = tileSize * 1.006;
 
-      ctx.save();
-      warpedHexPath(centerX, centerY, rotation, size);
-      ctx.clip();
-
-      drawRibbonPattern(centerX, centerY, rotation, size, seed);
-
-      ctx.restore();
+      renderCtx.save();
+      if (mode !== "shadow") {
+        warpedHexPath(renderCtx, centerX, centerY, rotation, size);
+        renderCtx.clip();
+      }
+      drawRibbonPattern(renderCtx, centerX, centerY, rotation, size, seed, mode);
+      renderCtx.restore();
     }
 
-    function warpedHexPath(centerX, centerY, rotation, size) {
-      ctx.beginPath();
+    function warpedHexPath(renderCtx, centerX, centerY, rotation, size) {
+      renderCtx.beginPath();
 
       for (let edge = 0; edge < 6; edge += 1) {
         const startAngle = Math.PI / 3 * edge;
@@ -201,17 +205,17 @@
           const localY = lerp(Math.sin(startAngle) * size, Math.sin(endAngle) * size, t);
           const point = warpLocalPoint(centerX, centerY, rotation, localX, localY);
 
-          if (edge === 0 && step === 0) ctx.moveTo(point.x, point.y);
-          else ctx.lineTo(point.x, point.y);
+          if (edge === 0 && step === 0) renderCtx.moveTo(point.x, point.y);
+          else renderCtx.lineTo(point.x, point.y);
         }
       }
 
-      ctx.closePath();
+      renderCtx.closePath();
     }
 
-    function drawRibbonPattern(centerX, centerY, rotation, size, seed) {
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
+    function drawRibbonPattern(renderCtx, centerX, centerY, rotation, size, seed, mode) {
+      renderCtx.lineCap = "round";
+      renderCtx.lineJoin = "round";
 
       const smallRadius = size / 2;
       const largeRadius = size * 1.5;
@@ -235,42 +239,72 @@
       ]
         .sort((a, b) => a.z - b.z)
         .forEach((circle) => {
-          drawCircle(centerX, centerY, rotation, circle.x, circle.y, circle.radius);
+          drawCircle(renderCtx, centerX, centerY, rotation, circle.x, circle.y, circle.radius, size, mode);
         });
     }
 
-    function drawCircle(tileX, tileY, rotation, centerX, centerY, radius) {
-      ctx.beginPath();
+    function drawCircle(renderCtx, tileX, tileY, rotation, centerX, centerY, radius, size, mode) {
+      const points = [];
+      const segments = [];
+      let segment = [];
 
       for (let step = 0; step <= 128; step += 1) {
         const angle = Math.PI * 2 * step / 128;
+        const localX = centerX + Math.cos(angle) * radius;
+        const localY = centerY + Math.sin(angle) * radius;
         const point = warpLocalPoint(
           tileX,
           tileY,
           rotation,
-          centerX + Math.cos(angle) * radius,
-          centerY + Math.sin(angle) * radius
+          localX,
+          localY
         );
 
-        if (step === 0) ctx.moveTo(point.x, point.y);
-        else ctx.lineTo(point.x, point.y);
+        points.push(point);
+
+        if (mode === "shadow") {
+          if (insideHex(localX, localY, size)) {
+            segment.push(point);
+          } else if (segment.length) {
+            segments.push(segment);
+            segment = [];
+          }
+        }
       }
 
-      ctx.save();
-      ctx.shadowColor = "rgb(0 0 0 / 68%)";
-      ctx.shadowBlur = 3;
-      ctx.shadowOffsetX = 6;
-      ctx.shadowOffsetY = 6;
-      ctx.strokeStyle = "rgb(0 0 0 / 45%)";
-      ctx.lineWidth = 16;
-      ctx.stroke();
-      ctx.restore();
-      ctx.strokeStyle = colors.ink;
-      ctx.lineWidth = 13;
-      ctx.stroke();
-      ctx.strokeStyle = "#f7f3ee";
-      ctx.lineWidth = 7;
-      ctx.stroke();
+      if (mode === "shadow") {
+        if (segment.length) segments.push(segment);
+        segments.forEach((shadowPoints) => {
+          if (shadowPoints.length > 1) {
+            strokePoints(renderCtx, shadowPoints, 6, 6, "#000", 16);
+          }
+        });
+        return;
+      }
+
+      strokePoints(renderCtx, points, 0, 0, colors.ink, 13);
+      strokePoints(renderCtx, points, 0, 0, "#f7f3ee", 7);
+    }
+
+    function insideHex(x, y, size) {
+      const absX = Math.abs(x);
+      const absY = Math.abs(y);
+      return absY <= sqrt3 * size / 2 && absX + absY / sqrt3 <= size;
+    }
+
+    function strokePoints(renderCtx, points, offsetX, offsetY, color, width) {
+      renderCtx.strokeStyle = color;
+      renderCtx.lineWidth = width;
+      renderCtx.beginPath();
+
+      points.forEach((point, index) => {
+        const x = point.x + offsetX;
+        const y = point.y + offsetY;
+        if (index === 0) renderCtx.moveTo(x, y);
+        else renderCtx.lineTo(x, y);
+      });
+
+      renderCtx.stroke();
     }
 
     function warpLocalPoint(centerX, centerY, rotation, localX, localY) {
@@ -324,6 +358,7 @@
       const qMin = Math.floor(minX / (tileSize * 1.5)) - 3;
       const qMax = Math.ceil(maxX / (tileSize * 1.5)) + 3;
       const rSpan = Math.ceil((maxY - minY) / (tileSize * sqrt3)) + Math.abs(qMax - qMin) + 8;
+      const tiles = [];
 
       for (let q = qMin; q <= qMax; q += 1) {
         const centerR = Math.round(((minY + maxY) / 2) / (tileSize * sqrt3) - q / 2);
@@ -335,10 +370,37 @@
 
           const seed = hash(q, r);
           const rotation = (seed % 6) * Math.PI / 3;
-          drawTile(pos.x, pos.y, rotation, seed);
+          tiles.push({ x: pos.x, y: pos.y, rotation, seed });
         }
       }
 
+      shadowCtx.setTransform(1, 0, 0, 1, 0, 0);
+      shadowCtx.clearRect(0, 0, shadowCanvas.width, shadowCanvas.height);
+      shadowCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      shadowCtx.save();
+      shadowCtx.translate(view.x, view.y);
+      shadowCtx.scale(view.scale, view.scale);
+      shadowCtx.globalCompositeOperation = "destination-over";
+      tiles.forEach((tile) => {
+        drawTile(shadowCtx, tile.x, tile.y, tile.rotation, tile.seed, "shadow");
+      });
+      shadowCtx.restore();
+      shadowCtx.globalCompositeOperation = "source-over";
+
+      ctx.restore();
+
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = 0.38;
+      ctx.drawImage(shadowCanvas, 0, 0);
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(view.x, view.y);
+      ctx.scale(view.scale, view.scale);
+      tiles.forEach((tile) => {
+        drawTile(ctx, tile.x, tile.y, tile.rotation, tile.seed, "strand");
+      });
       ctx.restore();
     }
 
