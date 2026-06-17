@@ -256,6 +256,15 @@
         else ctx.lineTo(point.x, point.y);
       }
 
+      ctx.save();
+      ctx.shadowColor = "rgb(0 0 0 / 68%)";
+      ctx.shadowBlur = 3;
+      ctx.shadowOffsetX = 6;
+      ctx.shadowOffsetY = 6;
+      ctx.strokeStyle = "rgb(0 0 0 / 45%)";
+      ctx.lineWidth = 16;
+      ctx.stroke();
+      ctx.restore();
       ctx.strokeStyle = colors.ink;
       ctx.lineWidth = 13;
       ctx.stroke();
