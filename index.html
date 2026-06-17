@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hex Tile Field</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #b9ada0;
+      --ink: #1d1720;
+      --wine: #5a2431;
+      --tile: #e7edf0;
+      --edge: #877f73;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    canvas:active {
+      cursor: grabbing;
+    }
+
+    .toolbar {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      display: flex;
+      gap: 8px;
+      padding: 8px;
+      background: rgb(247 244 239 / 84%);
+      border: 1px solid rgb(56 47 39 / 18%);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgb(48 39 32 / 16%);
+      backdrop-filter: blur(10px);
+    }
+
+    button {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgb(46 38 32 / 20%);
+      border-radius: 7px;
+      background: #fffaf3;
+      color: #2b2520;
+      font: 600 18px/1 system-ui, sans-serif;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #f2ebe2;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="field" aria-label="Infinite field of rotated hex tiles"></canvas>
+  <div class="toolbar" aria-label="View controls">
+    <button id="zoom-out" type="button" aria-label="Zoom out">-</button>
+    <button id="reset" type="button" aria-label="Reset view">0</button>
+    <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("field");
+    const ctx = canvas.getContext("2d");
+    const rootStyles = getComputedStyle(document.documentElement);
+    const colors = {
+      bg: rootStyles.getPropertyValue("--bg").trim(),
+      ink: rootStyles.getPropertyValue("--ink").trim(),
+      wine: rootStyles.getPropertyValue("--wine").trim(),
+      tile: rootStyles.getPropertyValue("--tile").trim(),
+      edge: rootStyles.getPropertyValue("--edge").trim()
+    };
+
+    const tileSize = 72;
+    const sqrt3 = Math.sqrt(3);
+    const minScale = 0.25;
+    const maxScale = 4;
+    const pointers = new Map();
+
+    let dpr = 1;
+    let view = { x: 0, y: 0, scale: 1 };
+    let dragStart = null;
+    let pinchStart = null;
+    let raf = 0;
+
+    function resize() {
+      dpr = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.round(window.innerWidth * dpr);
+      canvas.height = Math.round(window.innerHeight * dpr);
+      canvas.style.width = `${window.innerWidth}px`;
+      canvas.style.height = `${window.innerHeight}px`;
+      queueDraw();
+    }
+
+    function resetView() {
+      view = {
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+        scale: 1
+      };
+      queueDraw();
+    }
+
+    function queueDraw() {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        draw();
+      });
+    }
+
+    function screenToWorld(x, y) {
+      return {
+        x: (x - view.x) / view.scale,
+        y: (y - view.y) / view.scale
+      };
+    }
+
+    function zoomAt(screenX, screenY, factor) {
+      const before = screenToWorld(screenX, screenY);
+      view.scale = clamp(view.scale * factor, minScale, maxScale);
+      view.x = screenX - before.x * view.scale;
+      view.y = screenY - before.y * view.scale;
+      queueDraw();
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function hash(q, r) {
+      let n = q * 374761393 + r * 668265263;
+      n = (n ^ (n >>> 13)) * 1274126177;
+      return (n ^ (n >>> 16)) >>> 0;
+    }
+
+    function axialToWorld(q, r) {
+      return {
+        x: tileSize * 1.5 * q,
+        y: tileSize * sqrt3 * (r + q / 2)
+      };
+    }
+
+    function hexPath(size) {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i += 1) {
+        const angle = Math.PI / 3 * i;
+        const x = Math.cos(angle) * size;
+        const y = Math.sin(angle) * size;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+    }
+
+    function drawTile(centerX, centerY, rotation) {
+      const size = tileSize * 1.006;
+
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.rotate(rotation);
+
+      hexPath(size);
+      ctx.clip();
+
+      drawRibbonPattern(size);
+
+      ctx.restore();
+    }
+
+    function drawRibbonPattern(size) {
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      const smallRadius = size / 2;
+      const largeRadius = size * 1.5;
+      const vertex = {
+        x: -size / 2,
+        y: sqrt3 * size / 2
+      };
+      const upperNeighborCenter = {
+        x: 0,
+        y: -sqrt3 * size
+      };
+      const upperRightNeighborCenter = {
+        x: size * 1.5,
+        y: -sqrt3 * size / 2
+      };
+
+      drawCircle(upperNeighborCenter.x, upperNeighborCenter.y, largeRadius, colors.ink, 7);
+      drawCircle(upperRightNeighborCenter.x, upperRightNeighborCenter.y, largeRadius, colors.ink, 7);
+      drawCircle(vertex.x, vertex.y, smallRadius, colors.ink, 7);
+    }
+
+    function drawCircle(centerX, centerY, radius, color, width) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    function drawBackground() {
+      ctx.fillStyle = colors.bg;
+      ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+    }
+
+    function draw() {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawBackground();
+
+      ctx.save();
+      ctx.translate(view.x, view.y);
+      ctx.scale(view.scale, view.scale);
+
+      const padding = tileSize * 2.5;
+      const topLeft = screenToWorld(-padding, -padding);
+      const bottomRight = screenToWorld(window.innerWidth + padding, window.innerHeight + padding);
+      const minX = Math.min(topLeft.x, bottomRight.x);
+      const maxX = Math.max(topLeft.x, bottomRight.x);
+      const minY = Math.min(topLeft.y, bottomRight.y);
+      const maxY = Math.max(topLeft.y, bottomRight.y);
+
+      const qMin = Math.floor(minX / (tileSize * 1.5)) - 3;
+      const qMax = Math.ceil(maxX / (tileSize * 1.5)) + 3;
+      const rSpan = Math.ceil((maxY - minY) / (tileSize * sqrt3)) + Math.abs(qMax - qMin) + 8;
+
+      for (let q = qMin; q <= qMax; q += 1) {
+        const centerR = Math.round(((minY + maxY) / 2) / (tileSize * sqrt3) - q / 2);
+        for (let r = centerR - rSpan; r <= centerR + rSpan; r += 1) {
+          const pos = axialToWorld(q, r);
+          if (pos.x < minX - padding || pos.x > maxX + padding || pos.y < minY - padding || pos.y > maxY + padding) {
+            continue;
+          }
+
+          const rotation = (hash(q, r) % 6) * Math.PI / 3;
+          drawTile(pos.x, pos.y, rotation);
+        }
+      }
+
+      ctx.restore();
+    }
+
+    function getPointerAverage() {
+      const list = [...pointers.values()];
+      const total = list.reduce((sum, point) => ({
+        x: sum.x + point.x,
+        y: sum.y + point.y
+      }), { x: 0, y: 0 });
+
+      return {
+        x: total.x / list.length,
+        y: total.y / list.length
+      };
+    }
+
+    function getPointerDistance() {
+      const list = [...pointers.values()];
+      if (list.length < 2) return 0;
+      return Math.hypot(list[0].x - list[1].x, list[0].y - list[1].y);
+    }
+
+    canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        zoomAt(event.clientX, event.clientY, Math.exp(-event.deltaY * 0.001));
+        return;
+      }
+
+      view.x -= event.deltaX;
+      view.y -= event.deltaY;
+      queueDraw();
+    }, { passive: false });
+
+    canvas.addEventListener("pointerdown", (event) => {
+      canvas.setPointerCapture(event.pointerId);
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+      if (pointers.size === 1) {
+        dragStart = {
+          pointer: { x: event.clientX, y: event.clientY },
+          view: { ...view }
+        };
+        pinchStart = null;
+      } else if (pointers.size === 2) {
+        pinchStart = {
+          distance: getPointerDistance(),
+          center: getPointerAverage(),
+          view: { ...view }
+        };
+        dragStart = null;
+      }
+    });
+
+    canvas.addEventListener("pointermove", (event) => {
+      if (!pointers.has(event.pointerId)) return;
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+      if (pointers.size === 1 && dragStart) {
+        view.x = dragStart.view.x + event.clientX - dragStart.pointer.x;
+        view.y = dragStart.view.y + event.clientY - dragStart.pointer.y;
+        queueDraw();
+      } else if (pointers.size === 2 && pinchStart) {
+        const center = getPointerAverage();
+        const factor = getPointerDistance() / pinchStart.distance;
+        const before = {
+          x: (pinchStart.center.x - pinchStart.view.x) / pinchStart.view.scale,
+          y: (pinchStart.center.y - pinchStart.view.y) / pinchStart.view.scale
+        };
+
+        view.scale = clamp(pinchStart.view.scale * factor, minScale, maxScale);
+        view.x = center.x - before.x * view.scale;
+        view.y = center.y - before.y * view.scale;
+        queueDraw();
+      }
+    });
+
+    function endPointer(event) {
+      pointers.delete(event.pointerId);
+      if (pointers.size === 0) {
+        dragStart = null;
+        pinchStart = null;
+      } else if (pointers.size === 1) {
+        const point = [...pointers.values()][0];
+        dragStart = {
+          pointer: { ...point },
+          view: { ...view }
+        };
+        pinchStart = null;
+      }
+    }
+
+    canvas.addEventListener("pointerup", endPointer);
+    canvas.addEventListener("pointercancel", endPointer);
+    canvas.addEventListener("pointerleave", endPointer);
+
+    document.getElementById("zoom-in").addEventListener("click", () => {
+      zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.25);
+    });
+
+    document.getElementById("zoom-out").addEventListener("click", () => {
+      zoomAt(window.innerWidth / 2, window.innerHeight / 2, 0.8);
+    });
+
+    document.getElementById("reset").addEventListener("click", resetView);
+
+    window.addEventListener("resize", resize);
+    resize();
+    resetView();
+  </script>
+</body>
+</html>
